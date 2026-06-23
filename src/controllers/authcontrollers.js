@@ -1,12 +1,12 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
+import { isValidEmail, isStrongPassword, validateRegistrationPayload } from '../utils/validator.js'
 
 const globalUsersDatabase = [];
-const ALLOWED_ROLES = ['Admin', 'User', 'Guest'];
 
-const generateServiceToken = (name, role, appId) => {
+const generateServiceToken = (username, role, appId) => {
     return jwt.sign(
-        { name, role, originApp: appId },
+        { username, role, originApp: appId },
         process.env.JWT_SECRET,
         { expiresIn: '1h' }
     );
@@ -14,54 +14,71 @@ const generateServiceToken = (name, role, appId) => {
 
 export const registerUser = async (req, res) => {
     try {
-        const { name, password, role, appId } = req.body;
+        const { appId, role } = req.body;
 
-        if (!name || !password || !role || !appId) {
-            return res.status(400).json({ status: "error", message: "Missing required fields: name, password, role, or appId" });
+        const validation = validateRegistrationPayload(req.body);
+        if (!validation.isValid) {
+            return res.status(400).json({ 
+                status: "error", 
+                message: `Missing required fields: ${validation.missingFields.join(', ')}` 
+            });
         }
 
-        if (!ALLOWED_ROLES.includes(role)) {
-            return res.status(400).json({ status: "error", message: "Invalid role assigned for this service" });
+        const { username, email, password } = req.body;
+
+        if (!appId || !role) {
+            return res.status(400).json({ status: "error", message: "Missing service configurations: appId or role" });
         }
 
-        const userExists = globalUsersDatabase.find(user => user.name === name && user.appId === appId);
+        if (!isValidEmail(email)) {
+            return res.status(400).json({ status: "error", message: "Invalid email format structure" });
+        }
+
+        if (!isStrongPassword(password)) {
+            return res.status(400).json({ status: "error", message: "Password must be at least 8 characters long and contain both letters and numbers" });
+        }
+
+        const userExists = globalUsersDatabase.find(user => 
+            (user.username === username || user.email === email) && user.appId === appId
+        );
         if (userExists) {
-            return res.status(400).json({ status: "error", message: "User already registered under this application" });
+            return res.status(400).json({ status: "error", message: "Username or Email already registered under this application" });
         }
 
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
 
         const newUser = {
-            name,
+            username,
+            email,
             password: hashedPassword,
             role,
             appId
         };
         globalUsersDatabase.push(newUser);
 
-        const token = generateServiceToken(newUser.name, newUser.role, newUser.appId);
+        const token = generateServiceToken(newUser.username, newUser.role, newUser.appId);
 
         res.status(201).json({
             status: "success",
-            message: "Registration successful. User created and authenticated.",
+            message: "Registration successful. Payload verified.",
             token
         });
 
     } catch (error) {
-        res.status(500).json({ status: "error", message: "Internal verification fault during registration." });
+        res.status(500).json({ status: "error", message: "Internal verification fault during validation middleware checks." });
     }
 };
 
 export const loginUser = async (req, res) => {
     try {
-        const { name, password, appId } = req.body;
+        const { username, password, appId } = req.body;
 
-        if (!name || !password || !appId) {
-            return res.status(400).json({ status: "error", message: "Missing required fields: name, password, or appId" });
+        if (!username || !password || !appId) {
+            return res.status(400).json({ status: "error", message: "Missing required fields: username, password, or appId" });
         }
 
-        const userFound = globalUsersDatabase.find(user => user.name === name && user.appId === appId);
+        const userFound = globalUsersDatabase.find(user => user.username === username && user.appId === appId);
         if (!userFound) {
             return res.status(401).json({ status: "error", message: "Invalid credentials or application origin" });
         }
@@ -71,7 +88,7 @@ export const loginUser = async (req, res) => {
             return res.status(401).json({ status: "error", message: "Invalid credentials" });
         }
 
-        const token = generateServiceToken(userFound.name, userFound.role, userFound.appId);
+        const token = generateServiceToken(userFound.username, userFound.role, userFound.appId);
 
         res.status(200).json({
             status: "success",
@@ -80,6 +97,6 @@ export const loginUser = async (req, res) => {
         });
 
     } catch (error) {
-        res.status(500).json({ status: "error", message: "Internal verification fault during login." });
+        res.status(500).json({ status: "error", message: "Internal verification fault during login identity checks." });
     }
 };
